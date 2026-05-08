@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "username": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "dob": { "type": "string" },
+        "gender": { "type": "string", "enum": ["male", "female", "prefer-not-to-say"] },
+        "bio": { "type": "string" },
+        "spotifyUrl": { "type": "string" },
+        "instagramUrl": { "type": "string" },
+        "onboardingComplete": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "SongReview": {
+      "title": "SongReview",
+      "description": "User review and comment on a specific song recommendation",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "songId": { "type": "string" },
+        "songTitle": { "type": "string" },
+        "artist": { "type": "string" },
+        "albumArt": { "type": "string" },
+        "isLiked": { "type": "boolean" },
+        "comment": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "songId", "songTitle", "artist", "isLiked", "timestamp"]
+    },
+    "ProcessingResult": {
+      "title": "ProcessingResult",
+      "description": "Result of an image analysis",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "vibe": { "type": "string" },
+        "analysis": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "recommendations": { "type": "array" }
+      }
+    },
+    "Review": {
+      "title": "Review",
+      "description": "User review of the app",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "text": { "type": "string" },
+        "rating": { "type": "integer" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "username", "text", "rating", "timestamp"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Collection of user profiles"
+    },
+    "users/{userId}/reviews/{songId}": {
+      "schema": "SongReview",
+      "description": "User reviews and comments on recommendations"
+    },
+    "users/{userId}/likes/{songId}": {
+      "schema": "SongRecommendation",
+      "description": "User's liked songs"
+    },
+    "users/{userId}/curations/{curationId}": {
+      "schema": "ProcessingResult",
+      "description": "History of image analyses and vibe results"
+    },
+    "usernames/{username}": {
+      "schema": { "type": "object", "properties": { "uid": { "type": "string" } } },
+      "description": "Registry for unique usernames"
+    },
+    "reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Public user reviews"
+    }
+  }
+}

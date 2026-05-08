@@ -1,0 +1,11 @@
+{
+  "name": "NOIR",
+  "description": "Neph Optical Image Resonance — Profound aesthetic decoding and contextual AI music curation.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "Image Processing",
+    "AI Recommendations"
+  ]
+}

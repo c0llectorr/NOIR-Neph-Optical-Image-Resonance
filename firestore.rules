@@ -1,0 +1,134 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 256 && id.matches('^[a-zA-Z0-9._!@#$%^&*()\\-+= ]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidUser(data) {
+      return data.uid == request.auth.uid &&
+             data.email is string && data.email.size() <= 256 &&
+             data.username is string && data.username.size() >= 3 && data.username.size() <= 32 &&
+             data.firstName is string && data.firstName.size() <= 100 &&
+             data.lastName is string && data.lastName.size() <= 100 &&
+             data.dob is string &&
+             data.gender is string &&
+             (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1000)) &&
+             data.profileCompleted == true &&
+             (data.onboardingComplete == null || data.onboardingComplete is bool);
+    }
+
+    function isValidUsername(data, usernameId) {
+      return isValidId(usernameId) && 
+             data.uid == request.auth.uid;
+    }
+
+    function isValidSongReview(data, userId) {
+      return data.userId == userId &&
+             data.songId is string &&
+             data.songTitle is string &&
+             data.artist is string &&
+             data.timestamp == request.time;
+    }
+
+    function isValidSongRecommendation(data) {
+      return data.id is string &&
+             data.title is string &&
+             data.artist is string &&
+             (data.albumArt == null || data.albumArt is string) &&
+             (data.previewUrl == null || data.previewUrl is string) &&
+             data.mood is string &&
+             data.explanation is string &&
+             data.vibeMatchScore is number;
+    }
+
+    // --- Collections ---
+
+    match /usernames/{username} {
+      allow get: if isSignedIn();
+      allow create: if isVerified() && isValidUsername(incoming(), username);
+      allow update: if isVerified() && (isOwner(existing().uid) || isOwner(incoming().uid)) && isValidUsername(incoming(), username);
+      allow delete: if isVerified() && isOwner(existing().uid);
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isVerified() && isOwner(userId) && 
+                      isValidUser(incoming()) && 
+                      existsAfter(/databases/$(database)/documents/usernames/$(incoming().username));
+      allow update: if isVerified() && isOwner(userId) && 
+                      incoming().uid == existing().uid &&
+                      incoming().email == existing().email &&
+                      (incoming().username == existing().username || existsAfter(/databases/$(database)/documents/usernames/$(incoming().username))) &&
+                      isValidUser(incoming());
+      allow delete: if isVerified() && isOwner(userId);
+
+      match /likes/{songId} {
+        allow list, get: if isOwner(userId);
+        allow write: if isVerified() && isOwner(userId) && isValidId(songId) && isValidSongRecommendation(incoming()); 
+      }
+
+      match /reviews/{songId} {
+        allow list, get: if isOwner(userId);
+        allow create, update: if isVerified() && isOwner(userId) && isValidId(songId) && isValidSongReview(incoming(), userId);
+        allow delete: if isVerified() && isOwner(userId);
+      }
+
+      match /feedback/{feedbackId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isVerified() && isOwner(userId) && 
+                        isValidId(feedbackId) &&
+                        incoming().userId == userId &&
+                        incoming().explanationRating >= 1 && incoming().explanationRating <= 5 &&
+                        incoming().suggestionRating >= 1 && incoming().suggestionRating <= 5;
+        allow delete: if isVerified() && isOwner(userId);
+      }
+
+      match /curations/{curationId} {
+        allow list, get: if isOwner(userId);
+        allow create, delete: if isVerified() && isOwner(userId) && isValidId(curationId);
+      }
+    }
+
+    // Legacy or App Reviews
+    match /reviews/{reviewId} {
+      allow list, get: if isSignedIn();
+      allow create: if isSignedIn() && 
+                      incoming().userId == request.auth.uid &&
+                      incoming().text is string && 
+                      incoming().rating is number &&
+                      incoming().username is string &&
+                      incoming().timestamp == request.time;
+      allow update, delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+  }
+}
