@@ -82,6 +82,19 @@
       "schema": "ProcessingResult",
       "description": "History of image analyses and vibe results"
     },
+    "users/{userId}/feedback/{feedbackId}": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string" },
+          "explanationRating": { "type": "integer" },
+          "suggestionRating": { "type": "integer" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        },
+        "required": ["userId", "explanationRating", "suggestionRating", "timestamp"]
+      },
+      "description": "User feedback on AI explanations and suggestions"
+    },
     "usernames/{username}": {
       "schema": { "type": "object", "properties": { "uid": { "type": "string" } } },
       "description": "Registry for unique usernames"

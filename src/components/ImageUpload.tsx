@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { Upload, X, Image as ImageIcon, Camera, RefreshCw } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { resizeImage } from "../lib/imageUtils";
+import { ALLOWED_MIME_TYPES } from "../services/geminiService";
 
 export interface MediaItem {
   base64: string;
@@ -33,9 +34,15 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({ onUpload, onClear, isL
   };
 
   const handleFiles = useCallback(async (files: FileList | File[]) => {
-    const validFiles = Array.from(files).filter(file => 
-      file.type.startsWith("image/") || file.type.startsWith("video/")
-    );
+    const fileArray = Array.from(files);
+    const validFiles = fileArray.filter(file => {
+      const isMedia = file.type.startsWith("image/") || file.type.startsWith("video/");
+      return isMedia && (ALLOWED_MIME_TYPES.includes(file.type) || file.type === "");
+    });
+
+    if (validFiles.length < fileArray.length) {
+      alert("Security Filter: Only image and video files (JPG, PNG, GIF, MP4, etc.) are permitted. Zip files, documents, and other non-media formats have been blocked.");
+    }
 
     if (validFiles.length === 0) return;
 

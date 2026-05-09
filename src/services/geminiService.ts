@@ -6,6 +6,15 @@ export interface MediaInput {
   mimeType: string;
 }
 
+export const ALLOWED_MIME_TYPES = [
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif',
+  'video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/mpeg', 'video/webm'
+];
+
+export function validateMediaTypes(mediaList: MediaInput[]): boolean {
+  return mediaList.every(m => ALLOWED_MIME_TYPES.includes(m.mimeType) || m.mimeType === "" || m.mimeType === "image/*" || m.mimeType === "video/*");
+}
+
 /**
  * Generates a simple hash for a base64 string to use as a cache key.
  * This helps avoid redundant AI calls for the same image.
@@ -43,12 +52,29 @@ export async function quickAnalyzeMediaVibe(mediaList: MediaInput[]): Promise<{ 
   }));
 
   try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: [{ parts: [{ text: prompt }, ...mediaParts] }],
-      config: { responseMimeType: "application/json" }
-    });
-    const text = response.text;
+    const generateWithRetry = async (retryCount = 2) => {
+      for (let i = 0; i <= retryCount; i++) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [{ parts: [{ text: prompt }, ...mediaParts] }],
+            config: { responseMimeType: "application/json" }
+          });
+          return response;
+        } catch (err: any) {
+          const isRetryable = err.message?.includes('503') || err.message?.includes('429') || err.message?.includes('500') || err.message?.includes('403');
+          if (i < retryCount && isRetryable) {
+            console.warn(`[Gemini] Quick Analyze attempt ${i + 1} failed, retrying...`, err.message);
+            await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
+
+    const response = await generateWithRetry();
+    const text = response?.text;
     return JSON.parse(text || "{}");
   } catch (e) {
     // Check for 503 "model is currently experiencing high demand" error

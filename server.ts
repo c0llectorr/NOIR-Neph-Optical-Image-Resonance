@@ -4,6 +4,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from "url";
 import axios from "axios";
+import cors from "cors";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,13 +13,16 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
+  app.use(cors());
+
   app.use((req, res, next) => {
     const timestamp = new Date().toISOString();
     res.on("finish", () => {
       // Only log API calls, assets in production, or errors
       const isApi = req.url.startsWith("/api");
       const isSource = req.url.startsWith("/src/");
-      if (res.statusCode >= 400 || (isApi && !isSource)) {
+      const isHealth = req.url === "/api/health";
+      if (res.statusCode >= 400 || (isApi && !isSource && !isHealth)) {
         console.log(`[${timestamp}] ${req.method} ${req.originalUrl || req.url} ${res.statusCode} - Ref: ${req.headers.referer || 'none'}`);
       }
     });
@@ -39,38 +43,73 @@ async function startServer() {
   });
 
   apiRouter.get("/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    console.log(`[Health Check] pinged at ${new Date().toISOString()}`);
+    res.json({ status: "ok", timestamp: new Date().toISOString(), mode: process.env.NODE_ENV || 'development' });
   });
 
   // iTunes Proxy
   apiRouter.get("/itunes-search", async (req, res) => {
     const { term } = req.query;
-    if (!term) return res.status(400).json({ error: "Term is required" });
+    if (!term || typeof term !== 'string') return res.status(400).json({ error: "Term is required" });
+
+    // Clean term: remove special characters that might confuse the search
+    const cleanTerm = term.replace(/[(){}[\]]/g, '').trim();
+
+    console.log(`[iTunes Proxy] Searching for: "${cleanTerm}" (original: "${term}")`);
 
     try {
-      const response = await axios.get("https://itunes.apple.com/search", {
-        params: {
-          term,
+      const search = async (currTerm: string, country?: string) => {
+        const params: any = {
+          term: currTerm,
           media: "music",
           entity: "song",
-          limit: 5,
-        },
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'application/json'
-        },
-        timeout: 10000
-      });
+          limit: 20
+        };
+        if (country) params.country = country;
 
-      let results = response.data.results || [];
-      const validResults = results.filter((r: any) => !!r.previewUrl);
-      if (validResults.length > 0) {
-        res.json({ results: validResults });
-      } else if (results.length > 0) {
-        res.json({ results: [results[0]], warning: "No previews found" });
-      } else {
-        res.json({ results: [] });
+        return axios.get("https://itunes.apple.com/search", {
+          params,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          },
+          timeout: 8000
+        });
+      };
+
+      // Try multiple strategies
+      let response = await search(cleanTerm);
+      
+      // Strategy 1: Global search failed or few results? try US
+      if (!response.data.results || response.data.results.length < 2) {
+        console.log(`[iTunes Proxy] Low results for "${cleanTerm}", trying US...`);
+        const usResp = await search(cleanTerm, "US");
+        if (usResp.data.results && usResp.data.results.length > response.data.results.length) {
+          response = usResp;
+        }
       }
+
+      // Strategy 2: If still no results, try cleaning the term even more (remove 'by', ' - ', etc.)
+      if (!response.data.results || response.data.results.length === 0) {
+        const simplerTerm = cleanTerm.split(/ - | by /i)[0].trim();
+        if (simplerTerm !== cleanTerm) {
+          console.log(`[iTunes Proxy] Trying simpler term: "${simplerTerm}"`);
+          const simpleResp = await search(simplerTerm);
+          if (simpleResp.data.results && simpleResp.data.results.length > 0) {
+            response = simpleResp;
+          }
+        }
+      }
+
+      const results = response.data.results || [];
+      console.log(`[iTunes Proxy] Returning ${results.length} results for "${cleanTerm}"`);
+
+      // Tag results with helpful flags
+      const enhancedResults = results.map((r: any) => ({
+        ...r,
+        _isPlayable: !!r.previewUrl
+      }));
+
+      res.json({ results: enhancedResults });
     } catch (error: any) {
       console.error("[iTunes Search] API Error:", error.message);
       res.status(500).json({ error: "Failed to fetch from iTunes", details: error.message });
@@ -179,7 +218,8 @@ async function startServer() {
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       const url = req.originalUrl || req.url;
-      const isApi = url.includes("/api") || url.startsWith("api");
+      // Exclude gemini-api-proxy from being caught as an internal API 404
+      const isApi = (url.includes("/api") || url.startsWith("/api")) && !url.includes("gemini-api-proxy");
       const acceptsHtml = req.headers.accept?.includes("text/html");
       const hasExtension = path.extname(url.split('?')[0]).length > 1;
 

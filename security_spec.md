@@ -1,70 +1,24 @@
-# Firebase Security Specification
+# Security Specification for Noir
 
-## 1. Data Invariants
-- A `User` profile must be created by the authenticated user and match their UID.
-- A `SongRecommendation` (Like) must belong to the user who liked it.
-- A `SongReview` must belong to the user who created it and must contain a valid `userId` and `songId`.
-- `usernames` must be unique and tied to a single `uid`.
-- Timestamps (`createdAt`, `updatedAt`, `timestamp`) must use server time.
+## Data Invariants
+1. A user profile (`users/{userId}`) must have a unique `username` registered in `usernames/{username}`.
+2. A user can only manage their own sub-collections (`likes`, `reviews`, `curations`, `feedback`).
+3. `usernames` is a unique index where the document ID is the username and it contains the `uid`.
+4. App reviews (`reviews/{reviewId}`) are public but only the author can edit/delete them.
 
-## 2. The "Dirty Dozen" Payloads
+## The "Dirty Dozen" Payloads
+1. **Identity Spoofing**: Attempt to create `users/victim_uid` with `request.auth.uid = attacker_uid`.
+2. **Username Hijack**: Attempt to create `usernames/taken_user` for a different `uid`.
+3. **Ghost Fields**: Attempt to add `isAdmin: true` to a user profile.
+4. **Invalid Rating**: Submitting a feedback rating of `6` or `-1`.
+5. **PII Breach**: Unauthenticated user trying to read `users/{userId}`.
+6. **Orphaned Like**: Creating a like for a song without a valid user session.
+7. **Timestamp Fraud**: Setting `createdAt` to a date in the future.
+8. **Malicious Curation**: Injecting a 1MB string into a curation title.
+9. **Duplicate Username**: Creating a user profile with a username that doesn't match the one in `usernames`.
+10. **Unauthorized Review Deletion**: User A trying to delete User B's app review.
+11. **Type Poisoning**: Sending an object where a string is expected in `dob`.
+12. **Status Bypass**: Manually setting `profileCompleted: true` without required fields.
 
-### P1: Identity Spoofing (User)
-**Target:** `users/attacker_uid`
-**Payload:** `{ "uid": "victim_uid", "email": "attacker@example.com", ... }`
-**Expected:** `PERMISSION_DENIED` (User UID must match document path and auth UID).
-
-### P2: Identity Spoofing (Review)
-**Target:** `users/victim_uid/reviews/song_1`
-**Payload:** `{ "userId": "victim_uid", "songId": "song_1", ... }`
-**Expected:** `PERMISSION_DENIED` (Only the owner can write to their own subcollection).
-
-### P3: Field Injection (User)
-**Target:** `users/user_uid`
-**Payload:** `{ ..., "role": "admin", "isVerified": true }`
-**Expected:** `PERMISSION_DENIED` (Shadow fields not allowed in User schema).
-
-### P4: Value Poisoning (Review Comment)
-**Target:** `users/user_uid/reviews/song_1`
-**Payload:** `{ ..., "comment": "A".repeat(1001) }`
-**Expected:** `PERMISSION_DENIED` (Comment size limit exceeded).
-
-### P5: Resource Poisoning (Review ID)
-**Target:** `users/user_uid/reviews/` + "JUNK".repeat(100)
-**Payload:** `{ ... }`
-**Expected:** `PERMISSION_DENIED` (ID exceeds size limit or fails regex).
-
-### P6: Timestamp Spoofing (Review)
-**Target:** `users/user_uid/reviews/song_1`
-**Payload:** `{ ..., "timestamp": "2000-01-01T00:00:00Z" }`
-**Expected:** `PERMISSION_DENIED` (Must use `serverTimestamp()`).
-
-### P7: Outcome Manipulation (Review Like Status)
-**Target:** `users/user_uid/reviews/song_1`
-**Action:** Update `isLiked` after it was set.
-**Expected:** `PERMISSION_DENIED` (If rules restricted terminal states, but here we allow updates, however we must verify it's the owner).
-
-### P8: Orphaned Write (User without Username)
-**Target:** `users/user_uid`
-**Payload:** `{ "uid": "user_uid", "username": "non_existent_username", ... }`
-**Expected:** `PERMISSION_DENIED` (`existsAfter` check for username reservation).
-
-### P9: PII Leak (User Profiling)
-**Target:** `users/victim_uid`
-**Operation:** `get` by non-owner.
-**Expected:** `PERMISSION_DENIED` (Only owners or admins can read profiles).
-
-### P10: List Scraping (Likes)
-**Target:** `users/victim_uid/likes`
-**Operation:** `list` by non-owner.
-**Expected:** `PERMISSION_DENIED`.
-
-### P11: State Shortcutting (Onboarding)
-**Target:** `users/user_uid`
-**Payload:** Update `onboardingComplete` without required fields.
-**Expected:** `PERMISSION_DENIED`.
-
-### P12: Shadow Field Update (Review)
-**Target:** `users/user_uid/reviews/song_1`
-**Payload:** `{ "comment": "Nice", "hidden_flag": true }`
-**Expected:** `PERMISSION_DENIED` (Update must restrict affected keys).
+## Test Runner (Success/Fail Scenarios)
+The `firestore.rules.test.ts` will verify these boundaries.

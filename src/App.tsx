@@ -14,7 +14,8 @@ import { shareVibeDirectly } from "./lib/shareUtils";
 import { MusicProvider } from "./contexts/MusicContext";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { UserContentProvider, useUserContent } from "./contexts/UserContentContext";
-import { analyzeMediaVibe, quickAnalyzeMediaVibe, getImageHash } from "./services/geminiService";
+import { analyzeMediaVibe, quickAnalyzeMediaVibe, getImageHash, validateMediaTypes } from "./services/geminiService";
+import { resolveSongs } from "./services/songService";
 import { ProcessingResult, SongRecommendation } from "./types";
 import { doc, setDoc, updateDoc, increment, getDocs, collection, query, where, limit, orderBy } from "firebase/firestore";
 import { db } from "./lib/firebase";
@@ -23,7 +24,7 @@ import { WifiOff, Loader2 } from "lucide-react";
 
 function MainApp() {
   const { user, userData, logout, loading, error: authError, setOnboardingComplete } = useAuth();
-  const { quotaExceeded, refreshCurations, isOffline } = useUserContent();
+  const { quotaExceeded, refreshCurations, isOffline, setIsOffline } = useUserContent();
   const [activeTab, setActiveTab] = useState<'home' | 'songs' | 'insights' | 'liked' | 'profile'>('home');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<string>('');
@@ -50,6 +51,23 @@ function MainApp() {
   const isDomainError = currentError?.toLowerCase().includes('authorized domain');
 
   useEffect(() => {
+    // Suppress benign Vite WebSocket errors and unhandled rejections that clutter logs
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const message = event.reason?.message || String(event.reason);
+      if (
+        message.includes("WebSocket closed without opened") || 
+        message.includes("[vite] failed to connect to websocket")
+      ) {
+        event.preventDefault();
+        console.log("[Vite-Guard] Suppressed expected HMR connection failure.");
+      }
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    return () => window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+  }, []);
+
+  useEffect(() => {
     const handleScroll = () => {
       setShowScrollTop(window.scrollY > 300);
     };
@@ -59,18 +77,28 @@ function MainApp() {
 
   useEffect(() => {
     // Server connection test
-    const testServer = async () => {
-      try {
-        const resp = await fetch('/api/health');
-        if (!resp.ok) {
+    const testServer = async (retries = 3) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          console.log(`[ServerHealth] Attempting health check (${i + 1}/${retries})...`);
+          const resp = await fetch('/api/health');
+          if (resp.ok) {
+            console.log('[ServerHealth] Proxy server healthy');
+            return;
+          }
           console.error('[ServerHealth] Proxy server health check failed:', resp.status);
+        } catch (e) {
+          console.error('[ServerHealth] Failed to connect to proxy server', e);
+          // Wait before retry
+          if (i < retries - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
-      } catch (e) {
-        console.error('[ServerHealth] Failed to connect to proxy server', e);
       }
+      setIsOffline(true);
     };
     testServer();
-  }, []);
+  }, [setIsOffline]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -101,6 +129,11 @@ function MainApp() {
       const mediaArray = Array.isArray(media) 
         ? media.map(m => ({ base64: m.base64, mimeType: m.type })) 
         : [{ base64: media, mimeType: result?.mediaType === 'video' ? 'video/mp4' : 'image/jpeg' }];
+
+      // SECURITY CHECK: Strictly block unsupported file types
+      if (!validateMediaTypes(mediaArray)) {
+        throw new Error("Security Alert: Unsupported file type detected. Only image and video files are allowed.");
+      }
 
       // --- STAGE 0: CACHE CHECK (Cost & Speed Optimization) ---
       if (user && !isLoadMore && !instruction) {
@@ -202,80 +235,8 @@ function MainApp() {
       const vibeResult = await analyzeMediaVibe(mediaArray, instruction, previousSongs, langs, art);
       
       setLoadingStatus('Resolving audio...');
-      // Resolve audio links for each recommendation with local track caching
-      const resolvedRecommendations = await Promise.all(
-        vibeResult.recommendations.map(async (song) => {
-          const cacheKey = `track_res_${song.title}_${song.artist}`.toLowerCase().replace(/[^a-z0-9]/g, '_');
-          const cachedTrack = localStorage.getItem(cacheKey);
-          
-          if (cachedTrack) {
-            try {
-              const trackData = JSON.parse(cachedTrack);
-              return { ...song, ...trackData };
-            } catch (e) {
-              localStorage.removeItem(cacheKey);
-            }
-          }
-
-          try {
-            console.log(`[TrackResolver] Resolving: ${song.title} by ${song.artist}`);
-            
-            const fetchWithLogging = async (url: string) => {
-              try {
-                const response = await fetch(url);
-                if (response.ok) {
-                  return await response.json();
-                }
-                return null;
-              } catch (err) {
-                return null;
-              }
-            };
-
-            let data = await fetchWithLogging(`/api/itunes-search?term=${encodeURIComponent(`${song.title} ${song.artist}`)}&v=${Date.now()}`);
-            
-            // Fallback: If title + artist fails, try just title + one keyword from artist name
-            if (!data || !data.results || data.results.length === 0) {
-              const simplerTerm = `${song.title} ${song.artist.split(' ')[0]}`;
-              data = await fetchWithLogging(`/api/itunes-search?term=${encodeURIComponent(simplerTerm)}&v=${Date.now()}`);
-            }
-
-            // Fallback 2: Just song title
-            if (!data || !data.results || data.results.length === 0) {
-              data = await fetchWithLogging(`/api/itunes-search?term=${encodeURIComponent(song.title)}&v=${Date.now()}`);
-            }
-
-            // Fallback 3: Artist only
-            if (!data || !data.results || data.results.length === 0) {
-              data = await fetchWithLogging(`/api/itunes-search?term=${encodeURIComponent(song.artist)}&v=${Date.now()}`);
-            }
-
-            if (data && data.results) {
-              const results = data.results as any[];
-              const track = results.find(r => !!r.previewUrl);
-              
-              if (track) {
-                console.log(`[TrackResolver] Preview URL found for: ${song.title} -> ${track.previewUrl}`);
-                const trackData = {
-                  previewUrl: track.previewUrl,
-                  albumArt: (track.artworkUrl100 || song.albumArt || "").replace('100x100bb', '600x600bb')
-                };
-                localStorage.setItem(cacheKey, JSON.stringify(trackData));
-                return { ...song, ...trackData };
-              } else {
-                console.warn(`[TrackResolver] No valid previewUrl found in results for: ${song.title}`);
-              }
-            } else {
-              console.warn(`[TrackResolver] iTunes query returned no results for: ${song.title}`);
-            }
-          } catch (e) {
-            console.warn(`Could not resolve track: ${song.title}`, e);
-          }
-          
-          // Return song but intentionally mark it as unresolvable if previewUrl is missing
-          return song;
-        })
-      );
+      // Resolve audio links using the dedicated Song Service
+      const resolvedRecommendations = await resolveSongs(vibeResult.recommendations);
 
       vibeResult.recommendations = resolvedRecommendations;
       const imageHash = getImageHash(mediaArray[0].base64);
@@ -300,13 +261,14 @@ function MainApp() {
         });
         setIsLoadingMore(false);
       } else {
-        const finalResult: ProcessingResult = {
-          ...vibeResult,
-          imageUrl: Array.isArray(media) ? media.map(m => m.base64) : media,
-          userInstruction: instruction || "",
-          id: Date.now().toString(),
-          imageHash // Store the hash for future indexing
-        };
+          // Truncate image array if it's too large to fit in Firestore (approximate check)
+          const finalResult: ProcessingResult = {
+            ...vibeResult,
+            imageUrl: Array.isArray(media) ? [media[0].base64] : media, // Only store the primary image to save space
+            userInstruction: instruction || "",
+            id: Date.now().toString(),
+            imageHash 
+          };
         
         if (user) {
           try {

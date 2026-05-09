@@ -1,18 +1,17 @@
 rules_version = '2';
 
-// Noir Security Rules - Hardened Version
-// Implements Attribute-Based Access Control (ABAC) and Relational Integrity
-
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 0. Global Safety Net - Default Deny
+    // ========================================================
+    // 0. GLOBAL SAFETY NET
+    // ========================================================
     match /{document=**} {
       allow read, write: if false;
     }
 
     // ========================================================
-    // HELPER PRIMITIVES
+    // HELPER FUNCTIONS
     // ========================================================
 
     function isSignedIn() {
@@ -20,7 +19,6 @@ service cloud.firestore {
     }
 
     function isVerified() {
-      // Mandates that the email is verified (standard for Google Auth)
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
@@ -36,7 +34,6 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // Validates that document IDs are reasonably small and don't contain hazardous characters
     function isValidId(id) {
       return id is string 
           && id.size() >= 1 
@@ -44,141 +41,135 @@ service cloud.firestore {
           && id.matches('^[a-zA-Z0-9._!@#$%^&*()+= -]+$');
     }
 
-    function isTimestamp(val) {
-      return val is timestamp || val is string; // App uses both serverTimestamp() and ISO strings
-    }
-
     // ========================================================
-    // VALIDATION BLUEPRINTS (Pillar 2)
+    // VALIDATION BLUEPRINTS
     // ========================================================
 
     function isValidUserCreate(data) {
-      // Strictly enforce field presence and types during registration
-      let required = ['uid', 'email', 'username', 'firstName', 'lastName', 'createdAt', 'profileCompleted', 'onboardingComplete', 'dob', 'gender'];
-      return data.keys().hasAll(required)
+      let requiredFields = ['uid', 'email', 'username', 'firstName', 'lastName', 'createdAt', 'profileCompleted', 'onboardingComplete', 'dob', 'gender'];
+      return data.keys().hasAll(requiredFields)
           && data.uid == request.auth.uid
           && data.email == request.auth.token.email
-          && data.username is string && data.username.size() >= 1 && data.username.size() <= 64
+          && data.username is string && data.username.size() >= 3 && data.username.size() <= 32
           && data.firstName is string && data.firstName.size() <= 100
           && data.lastName is string && data.lastName.size() <= 100
+          && data.dob is string
+          && data.gender is string
+          && data.createdAt is timestamp
           && data.profileCompleted is bool
           && data.onboardingComplete is bool
-          && isTimestamp(data.createdAt)
           && (data.get('photoURL', '') is string && data.get('photoURL', '').size() <= 1000);
     }
 
     function isValidUserUpdate(data) {
-      // Protect identity fields from being changed after creation
       return data.get('uid', '') == existing().uid
           && data.get('email', '') == existing().email
-          && (data.get('updatedAt', '') is string || data.get('updatedAt', null) is timestamp);
+          && (data.get('username', '') is string && data.get('username', '').size() >= 3 && data.get('username', '').size() <= 32)
+          && (data.get('updatedAt', '') is string || data.get('updatedAt', null) is timestamp || data.get('updatedAt', null) == null);
     }
 
-    function isValidUsernameRegistry(data) {
-      return data.keys().hasAll(['uid', 'createdAt'])
+    function isValidUsernameCreate(data, username) {
+      return isValidId(username)
+          && data.keys().hasAll(['uid', 'createdAt'])
           && data.uid == request.auth.uid
-          && isTimestamp(data.createdAt);
+          && (data.createdAt is timestamp || data.createdAt is string);
     }
 
-    function isValidSongEntry(data) {
+    function isValidSongRecommendation(data) {
       return data.get('id', '') is string
           && data.get('title', '') is string
           && (data.get('artist', '') is string || data.get('artist', null) == null);
     }
 
-    function isValidReview(data, userId) {
+    function isValidSongReview(data, userId) {
       return data.get('userId', '') == userId
           && data.get('songId', '') is string
           && data.get('isLiked', false) is bool
-          && isTimestamp(data.get('timestamp', ''));
+          && (data.get('timestamp', null) is timestamp || data.get('timestamp', '') is string);
+    }
+
+    function isValidFeedback(data, userId) {
+      return data.userId == userId
+          && data.explanationRating is int && data.explanationRating >= 1 && data.explanationRating <= 5
+          && data.suggestionRating is int && data.suggestionRating >= 1 && data.suggestionRating <= 5
+          && data.timestamp == request.time;
     }
 
     // ========================================================
-    // COLLECTION MATCHES
+    // COLLECTIONS
     // ========================================================
 
-    // Username Registry (The unique constraint mechanism)
+    // Registry for unique usernames
     match /usernames/{username} {
       allow get: if isSignedIn();
       allow create: if isVerified() 
-                    && isValidId(username)
-                    && isValidUsernameRegistry(incoming())
-                    // Pillar 7: Atomicity Guarantee - user must exist in the same batch
+                    && isValidUsernameCreate(incoming(), username)
                     && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid));
       
       allow delete: if isVerified() && existing().uid == request.auth.uid;
     }
 
-    // Main User Profiles
+    // User profiles
     match /users/{userId} {
-      // Pillar 3: Path variable hardening
-      allow get: if isOwner(userId) && isValidId(userId);
+      allow get: if isOwner(userId);
       
       allow create: if isVerified() 
                     && isOwner(userId) 
                     && isValidUserCreate(incoming())
-                    // Pillar 7: Relational Sync
                     && existsAfter(/databases/$(database)/documents/usernames/$(incoming().username));
 
       allow update: if isOwner(userId)
-                    && isValidUserUpdate(incoming())
+                    && incoming().uid == userId
+                    && incoming().email == existing().email
+                    && (incoming().username == existing().username || existsAfter(/databases/$(database)/documents/usernames/$(incoming().username)))
                     && (
-                      // Only allow specific profile fields to change
-                      incoming().diff(existing()).affectedKeys().hasOnly(['username', 'firstName', 'lastName', 'dob', 'gender', 'bio', 'spotifyUrl', 'instagramUrl', 'photoURL', 'onboardingComplete', 'profileCompleted', 'updatedAt', 'totalUploads'])
+                      // Profile Update Action
+                      incoming().diff(existing()).affectedKeys().hasOnly(['username', 'firstName', 'lastName', 'dob', 'gender', 'bio', 'spotifyUrl', 'instagramUrl', 'photoURL', 'onboardingComplete', 'profileCompleted', 'updatedAt'])
                     );
 
       allow delete: if isOwner(userId);
 
-      // --- Private User Content (Sub-collections) ---
-      
+      // Sub-collections
       match /likes/{songId} {
         allow list, get: if isOwner(userId);
-        allow create, update: if isVerified() && isOwner(userId) && isValidId(songId) && isValidSongEntry(incoming());
+        allow create: if isVerified() && isOwner(userId) && isValidId(songId) && isValidSongRecommendation(incoming());
+        allow update: if isVerified() && isOwner(userId) && isValidId(songId) && isValidSongRecommendation(incoming());
         allow delete: if isVerified() && isOwner(userId);
       }
 
       match /reviews/{songId} {
         allow list, get: if isOwner(userId);
-        allow create, update: if isVerified() && isOwner(userId) && isValidId(songId) && isValidReview(incoming(), userId);
+        allow create, update: if isVerified() && isOwner(userId) && isValidId(songId) && isValidSongReview(incoming(), userId);
         allow delete: if isVerified() && isOwner(userId);
       }
 
       match /feedback/{feedbackId} {
         allow list, get: if isOwner(userId);
-        allow create: if isVerified() && isOwner(userId) && isValidId(feedbackId)
-                      && incoming().get('userId', '') == userId
-                      && incoming().get('explanationRating', 1) is int
-                      && incoming().get('suggestionRating', 1) is int;
+        allow create: if isVerified() && isOwner(userId) && isValidId(feedbackId) && isValidFeedback(incoming(), userId);
       }
 
       match /curations/{curationId} {
         allow list, get: if isOwner(userId);
         allow create: if isVerified() && isOwner(userId) && isValidId(curationId) 
-                      && incoming().get('userId', '') == userId
-                      && isTimestamp(incoming().get('timestamp', ''));
-        allow update: if isVerified() && isOwner(userId) && isValidId(curationId);
+                      && incoming().userId == userId
+                      && incoming().timestamp == request.time;
         allow delete: if isVerified() && isOwner(userId);
       }
     }
 
-    // App Store / Public Reviews
+    // App reviews (Public)
     match /reviews/{reviewId} {
-      // Pillar 8: Secure List Queries
-      allow list, get: if isSignedIn();
-      
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
       allow create: if isVerified()
-                    && isValidId(reviewId)
                     && incoming().userId == request.auth.uid
                     && incoming().rating is int && incoming().rating >= 1 && incoming().rating <= 5
-                    && isTimestamp(incoming().timestamp);
-      
+                    && incoming().timestamp == request.time;
       allow update: if isVerified() 
                     && existing().userId == request.auth.uid
                     && incoming().userId == request.auth.uid
                     && incoming().rating is int && incoming().rating >= 1 && incoming().rating <= 5
-                    && isTimestamp(incoming().timestamp)
-                    && incoming().diff(existing()).affectedKeys().hasOnly(['text', 'rating', 'timestamp', 'username']);
-
+                    && incoming().timestamp == request.time;
       allow delete: if isVerified() && existing().userId == request.auth.uid;
     }
   }

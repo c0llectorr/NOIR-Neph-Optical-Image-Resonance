@@ -19,6 +19,15 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // Refs to track current state for playSong stability
+  const currentSongRef = useRef<SongRecommendation | null>(null);
+  const isPlayingRef = useRef(false);
+
+  useEffect(() => {
+    currentSongRef.current = currentSong;
+    isPlayingRef.current = isPlaying;
+  }, [currentSong, isPlaying]);
 
   const setPlaybackRate = useCallback((rate: number) => {
     if (audioRef.current) {
@@ -93,12 +102,12 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     // Toggle same song - but only if the previewUrl hasn't changed
     // This allows re-loading if a song was resolved with a new URL
-    const isSameSong = currentSong?.id === song.id;
+    const isSameSong = currentSongRef.current?.id === song.id;
     const isSameUrl = audio.src.includes(encodeURIComponent(song.previewUrl || '')) || audio.src === song.previewUrl;
 
     if (isSameSong && isSameUrl && audio.src) {
-      console.log(`[MusicContext] Same song and URL detected, toggling playback. isPlaying: ${isPlaying}`);
-      if (isPlaying) {
+      console.log(`[MusicContext] Same song and URL detected, toggling playback. isPlaying: ${isPlayingRef.current}`);
+      if (isPlayingRef.current) {
         audio.pause();
         setIsPlaying(false);
       } else {
@@ -119,6 +128,12 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
+    // If it's the same song but we already know it has no preview, don't re-trigger and cause a loop
+    if (isSameSong && !song.previewUrl && currentSongRef.current && !currentSongRef.current.previewUrl) {
+      console.log(`[MusicContext] Already handled no-preview state for ${song.title}, ignoring.`);
+      return;
+    }
+
     // Switch to new song or retry loading if src was missing
     if (song.previewUrl && (song.previewUrl.startsWith('http') || song.previewUrl.startsWith('/api'))) {
       const proxiedUrl = song.previewUrl.startsWith('/api') 
@@ -133,12 +148,14 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         audio.removeAttribute('src'); 
         audio.load();
         
+        // Update current song state BEFORE playing to ensure UI sync
+        setCurrentSong(song);
+
         // Wait for cleanup
         await new Promise(resolve => setTimeout(resolve, 50));
         
         audio.src = proxiedUrl;
         audio.load(); // Trigger the fetch
-        setCurrentSong(song);
         
         // Use play promise
         console.log(`[MusicContext] Attempting audio.play() for ${song.title}`);
@@ -181,10 +198,16 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } else {
       console.warn(`[MusicContext] No preview URL available for: ${song.title}`);
       setError("NO PREVIEW AVAILABLE");
-      setCurrentSong(song); // Still set current song so UI reflects selection
-      setIsPlaying(false);
+      
+      // ONLY update state if it's actually different to avoid render loops
+      if (currentSongRef.current?.id !== song.id) {
+        setCurrentSong(song);
+      }
+      if (isPlayingRef.current) {
+        setIsPlaying(false);
+      }
     }
-  }, [currentSong, isPlaying]);
+  }, []);
 
   const pauseSong = useCallback(() => {
     if (audioRef.current) {

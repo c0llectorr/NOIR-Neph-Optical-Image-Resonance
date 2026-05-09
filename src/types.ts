@@ -35,9 +35,9 @@ export interface SongRecommendation {
   title: string;
   artist: string;
   albumArt?: string;
-  mood: string;
-  explanation: string;
-  vibeMatchScore: number;
+  mood?: string;
+  explanation?: string;
+  vibeMatchScore?: number;
   previewUrl?: string; // Optional URL for audio playback
   feedback?: 'positive' | 'negative' | null;
 }

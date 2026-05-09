@@ -16,6 +16,7 @@ interface UserContentContextType {
   isOffline: boolean;
   toggleLike: (song: SongRecommendation) => Promise<void>;
   addReview: (review: Omit<SongReview, 'timestamp' | 'userId'>) => Promise<void>;
+  setIsOffline: (offline: boolean) => void;
   refreshCurations: () => void;
 }
 
@@ -445,6 +446,7 @@ export const UserContentProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isOffline,
       toggleLike,
       addReview,
+      setIsOffline,
       refreshCurations
     }}>
       {children}

@@ -47,6 +47,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const mediaType = result?.mediaType || 'image';
 
   const isNavigating = useRef(false);
+  const lastPlayedIdRef = useRef<string | null>(null);
 
   const navigate = useCallback((newDirection: number) => {
     if (isNavigating.current) return;
@@ -152,12 +153,27 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   // Play song when index changes or song data updates (e.g. previewUrl resolved)
   useEffect(() => {
-    if (songs[currentIndex]) {
-      console.log(`[SongsView] Effect triggered for index ${currentIndex}: ${songs[currentIndex].title}`);
-      playSong(songs[currentIndex]);
+    // DO NOT trigger playback while we are in a loading/refining state
+    if (isLoadingRefine) return;
+
+    const song = songs[currentIndex];
+    if (song) {
+      console.log(`[SongsView] Effect triggered for index ${currentIndex}: ${song.title}`);
+      
+      const isAlreadyCurrent = playingSong?.id === song.id;
+      const alreadyTried = lastPlayedIdRef.current === song.id;
+      
+      if (!isAlreadyCurrent && !alreadyTried) {
+        lastPlayedIdRef.current = song.id;
+        playSong(song);
+      } else if (isAlreadyCurrent && !isPlaying && song.previewUrl && !alreadyTried) {
+         // Auto-play on index change if not currently playing but has URL and we haven't tried yet
+         lastPlayedIdRef.current = song.id;
+         playSong(song);
+      }
     }
     setShowDescription(false);
-  }, [currentIndex, songs[currentIndex]?.previewUrl, songs[currentIndex]?.id, playSong]);
+  }, [currentIndex, songs, playingSong?.id, isPlaying, playSong, isLoadingRefine]);
 
   // Auto-pause on unmount (navigation)
   useEffect(() => {
@@ -626,7 +642,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             
             <div className="text-center space-y-4">
               <h3 className="text-3xl font-black text-white italic tracking-tighter uppercase">
-                Optimizing <span className="text-noir-gold">Vibe</span>
+                {isLoadingRefine ? "Syncing Vibe" : "Fetching More"}
               </h3>
               <div className="space-y-6">
                 <div className="flex items-center justify-center gap-4">
